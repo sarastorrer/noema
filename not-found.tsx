@@ -1,0 +1,1 @@
+import Link from 'next/link';import {Header,Footer} from '@/components/magazine';export default function NotFound(){return <><Header/><main className="empty-page"><span className="eyebrow">404 / FORA DE PAUTA</span><h1>Essa página não está aqui.</h1><Link className="button" href="/">Voltar à revista</Link></main><Footer/></>}

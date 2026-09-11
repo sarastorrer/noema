@@ -1,0 +1,3 @@
+import {Header,Footer} from '@/components/magazine';import ContactForm from './contact-form';
+export const metadata={title:'Contato',description:'Envie uma pauta, comentário ou proposta à revista NOEMA.'};
+export default function Contact(){return <><Header/><main className="contact-page"><section><span className="eyebrow">UM CANAL ABERTO</span><h1>Boas ideias<br/>começam com<br/><em>uma conversa.</em></h1><p>Uma sugestão de pauta, uma correção, uma perspectiva diferente. A revista também se constrói com quem lê.</p><div className="contact-mark" aria-hidden="true">↗</div></section><ContactForm/></main><Footer/></>}
