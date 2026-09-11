@@ -4,8 +4,8 @@ import { createClient } from '@supabase/supabase-js';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || '';
-const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '';
+const supabaseUrl = import.meta.env.VITE_SUPABASE_URL as string || '';
+const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY as string || '';
 
 export default function SignIn() {
   const [busy, setBusy] = useState(false);
