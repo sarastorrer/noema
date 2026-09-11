@@ -1,5 +1,41 @@
-import {getChatGPTUser} from '@/app/chatgpt-auth';
-import {runtime,database} from './db';
-export async function isAdmin(){const user=await getChatGPTUser();if(!user)return false;return (runtime().ADMIN_EMAILS||'').split(',').map(s=>s.trim().toLowerCase()).filter(Boolean).includes(user.email.toLowerCase());}
-export function sameOrigin(request:Request){const origin=request.headers.get('origin');const expected=runtime().SITE_ORIGIN||new URL(request.url).origin;return origin===expected;}
-export async function allowContact(request:Request){const ip=request.headers.get('cf-connecting-ip')||'unknown';const salt=runtime().RATE_SALT||'noema-contact';const digest=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(salt+ip));const hash=Array.from(new Uint8Array(digest)).map(x=>x.toString(16).padStart(2,'0')).join('');const now=Math.floor(Date.now()/1000),db=database();const row=await db.prepare('INSERT INTO rate_limits(key,hits,expires) VALUES(?,1,?) ON CONFLICT(key) DO UPDATE SET hits=CASE WHEN expires<? THEN 1 ELSE hits+1 END, expires=CASE WHEN expires<? THEN ? ELSE expires END RETURNING hits').bind(hash,now+3600,now,now,now+3600).first<{hits:number}>();await db.prepare('DELETE FROM rate_limits WHERE expires<?').bind(now-3600).run();return !!row && row.hits<=5;}
+import { getServerSupabase } from './db';
+
+const ADMIN_EMAILS = (process.env.ADMIN_EMAILS || '').split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
+
+export async function isAdmin(): Promise<boolean> {
+  const supabase = await getServerSupabase();
+  const { data: { session } } = await supabase.auth.getSession();
+  if (!session?.user?.email) return false;
+  if (ADMIN_EMAILS.length === 0) return true;
+  return ADMIN_EMAILS.includes(session.user.email.toLowerCase());
+}
+
+export function sameOrigin(request: Request): boolean {
+  const origin = request.headers.get('origin');
+  const siteOrigin = process.env.SITE_ORIGIN || new URL(request.url).origin;
+  return origin === siteOrigin;
+}
+
+export async function allowContact(request: Request): Promise<boolean> {
+  const ip = request.headers.get('x-forwarded-for')?.split(',')[0]?.trim() || 'unknown';
+  const salt = process.env.RATE_SALT || 'noema-contact';
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(salt + ip));
+  const hash = Array.from(new Uint8Array(digest)).map(x => x.toString(16).padStart(2, '0')).join('');
+  const now = Math.floor(Date.now() / 1000);
+  const windowExpiry = now + 3600;
+
+  const supabase = await getServerSupabase();
+  const { data: existing } = await supabase.from('rate_limits').select('hits,expires').eq('key', hash).maybeSingle();
+
+  let hits: number;
+  if (!existing || existing.expires < now) {
+    hits = 1;
+    await supabase.from('rate_limits').upsert({ key: hash, hits, expires: windowExpiry });
+  } else {
+    hits = existing.hits + 1;
+    await supabase.from('rate_limits').update({ hits, expires: existing.expires }).eq('key', hash);
+  }
+
+  await supabase.from('rate_limits').delete().lt('expires', now - 3600);
+  return hits <= 5;
+}

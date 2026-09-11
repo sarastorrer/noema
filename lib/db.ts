@@ -1,7 +1,51 @@
-import {env} from 'cloudflare:workers';
-import {Article,seedArticles} from './content';
-export function runtime(){return env as unknown as {DB:D1Database;ADMIN_EMAILS?:string;CONTACT_EMAIL?:string;RESEND_API_KEY?:string;CONTACT_FROM?:string;SITE_ORIGIN?:string;RATE_SALT?:string}}
-export function database(){const db=runtime().DB;if(!db)throw new Error('Database unavailable');return db}
-export async function ensureSeed(){const db=database();const mark=await db.prepare("SELECT value FROM settings WHERE key='seed-v1'").first();if(mark)return;const cols='id,slug,title,excerpt,category,series,body,sources,cover,status,published_at,updated_at,version';const statements=seedArticles.map(a=>db.prepare(`INSERT OR IGNORE INTO articles (${cols}) SELECT ?,?,?,?,?,?,?,?,?,?,?,?,? WHERE NOT EXISTS(SELECT 1 FROM settings WHERE key='seed-v1')`).bind(a.id,a.slug,a.title,a.excerpt,a.category,a.series,a.body,a.sources,a.cover,a.status,a.published_at,a.updated_at,a.version));await db.batch([...statements,db.prepare("INSERT OR IGNORE INTO settings(key,value) VALUES('seed-v1','done')")]);}
-export async function getArticles(admin=false):Promise<Article[]>{await ensureSeed();const r=await database().prepare(admin?'SELECT * FROM articles ORDER BY published_at DESC, id':'SELECT * FROM articles WHERE status=? AND published_at<=? ORDER BY published_at DESC, id').bind(...(admin?[]:['published',new Date().toISOString().slice(0,10)])).all<Article>();return r.results}
-export async function getArticle(slug:string){await ensureSeed();return database().prepare("SELECT * FROM articles WHERE slug=? AND status='published' AND published_at<=?").bind(slug,new Date().toISOString().slice(0,10)).first<Article>();}
+import { supabaseAdmin, getServerSupabase } from './supabase';
+import { Article, seedArticles } from './content';
+
+export async function ensureSeed() {
+  const { data: mark } = await supabaseAdmin.from('settings').select('value').eq('key', 'seed-v1').maybeSingle();
+  if (mark) return;
+  const rows = seedArticles.map(a => ({
+    id: a.id, slug: a.slug, title: a.title, excerpt: a.excerpt, category: a.category,
+    series: a.series, body: a.body, sources: a.sources, cover: a.cover, status: a.status,
+    published_at: a.published_at, updated_at: a.updated_at, version: a.version,
+  }));
+  await supabaseAdmin.from('articles').upsert(rows, { onConflict: 'id' });
+  await supabaseAdmin.from('settings').upsert({ key: 'seed-v1', value: 'done' });
+}
+
+function normalize(row: Record<string, unknown>): Article {
+  return {
+    ...row,
+    updated_at: typeof row.updated_at === 'string' ? row.updated_at : new Date(row.updated_at as string).toISOString(),
+  } as unknown as Article;
+}
+
+export async function getArticles(admin = false): Promise<Article[]> {
+  await ensureSeed();
+  const today = new Date().toISOString().slice(0, 10);
+  const client = admin ? supabaseAdmin : await getServerSupabase();
+  let query = client.from('articles').select('*');
+  if (!admin) {
+    query = query.eq('status', 'published').lte('published_at', today);
+  }
+  const { data, error } = await query.order('published_at', { ascending: false }).order('id', { ascending: true });
+  if (error) throw new Error(error.message);
+  return (data || []).map(normalize);
+}
+
+export async function getArticle(slug: string): Promise<Article | null> {
+  await ensureSeed();
+  const today = new Date().toISOString().slice(0, 10);
+  const client = await getServerSupabase();
+  const { data, error } = await client
+    .from('articles')
+    .select('*')
+    .eq('slug', slug)
+    .eq('status', 'published')
+    .lte('published_at', today)
+    .maybeSingle();
+  if (error) throw new Error(error.message);
+  return data ? normalize(data as Record<string, unknown>) : null;
+}
+
+export { supabaseAdmin, getServerSupabase };

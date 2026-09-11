@@ -1,3 +1,32 @@
-import {database} from '@/lib/db';import {isAdmin,sameOrigin} from '@/lib/security';import {articleInput,limitedJson} from '@/lib/validation';
-export async function PUT(request:Request,{params}:{params:Promise<{id:string}>}){if(!sameOrigin(request)||!await isAdmin())return Response.json({error:'Acesso restrito.'},{status:403});let input;try{input=articleInput.safeParse(await limitedJson(request))}catch{return Response.json({error:'Conteúdo inválido ou muito grande.'},{status:400})}if(!input.success||!input.data.version)return Response.json({error:'Confira os campos do artigo.'},{status:400});const a=input.data,{id}=await params,updated_at=new Date().toISOString();try{const result=await database().prepare('UPDATE articles SET slug=?,title=?,excerpt=?,category=?,series=?,body=?,sources=?,cover=?,status=?,published_at=?,updated_at=?,version=version+1 WHERE id=? AND version=?').bind(a.slug,a.title,a.excerpt,a.category,a.series,a.body,a.sources,a.cover,a.status,a.published_at,updated_at,id,a.version).run();if(!result.meta.changes)return Response.json({error:'O artigo mudou em outra janela. Copie seu texto antes de recarregar.'},{status:409});return Response.json({...a,id,updated_at,version:a.version+1})}catch(e){const conflict=String(e).includes('UNIQUE');return Response.json({error:conflict?'Esse endereço já está em uso.':'Não foi possível salvar. Seu texto foi preservado.'},{status:conflict?409:503})}}
-export async function DELETE(request:Request,{params}:{params:Promise<{id:string}>}){if(!sameOrigin(request)||!await isAdmin())return Response.json({error:'Acesso restrito.'},{status:403});const {id}=await params;try{const input=await limitedJson(request,1000);if(!Number.isInteger(input.version))return Response.json({error:'Versão inválida.'},{status:400});const r=await database().prepare('DELETE FROM articles WHERE id=? AND version=?').bind(id,input.version).run();if(!r.meta.changes)return Response.json({error:'O artigo mudou. Recarregue antes de excluir.'},{status:409});return Response.json({ok:true})}catch{return Response.json({error:'Não foi possível excluir.'},{status:503})}}
+import { getServerSupabase } from '@/lib/db';
+import { sameOrigin, allowContact } from '@/lib/security';
+import { contactInput, limitedJson } from '@/lib/validation';
+import { deliver } from '@/lib/mail';
+
+export async function POST(request: Request) {
+  if (!sameOrigin(request)) return Response.json({ error: 'Envie a mensagem pelo formulário da revista.' }, { status: 403 });
+  let result;
+  try {
+    result = contactInput.safeParse(await limitedJson(request, 20000));
+  } catch {
+    return Response.json({ error: 'Mensagem inválida ou muito longa.' }, { status: 400 });
+  }
+  if (!result.success) return Response.json({ error: 'Confira os campos e escreva uma mensagem com pelo menos 10 caracteres.' }, { status: 400 });
+  if (result.data.website) return Response.json({ error: 'Não foi possível validar o envio.' }, { status: 400 });
+  try {
+    if (!(await allowContact(request))) return Response.json({ error: 'Limite de mensagens atingido. Tente novamente em uma hora.' }, { status: 429 });
+    const { website, ...data } = result.data;
+    const id = crypto.randomUUID();
+    const created_at = new Date().toISOString();
+    const supabase = await getServerSupabase();
+    const { error } = await supabase.from('contacts').insert({
+      id, name: data.name, email: data.email, subject: data.subject,
+      message: data.message, delivery: 'pending', created_at,
+    });
+    if (error) return Response.json({ error: 'Não foi possível registrar sua mensagem. Tente novamente em instantes.' }, { status: 503 });
+    await deliver({ id, ...data, delivery: 'pending', created_at });
+    return Response.json({ message: 'Mensagem registrada na redação. Obrigado por escrever à NOEMA.' }, { status: 201 });
+  } catch {
+    return Response.json({ error: 'Não foi possível registrar sua mensagem. Tente novamente em instantes.' }, { status: 503 });
+  }
+}

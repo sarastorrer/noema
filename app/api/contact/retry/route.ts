@@ -1,3 +1,25 @@
-import {database,getArticles} from '@/lib/db';import {isAdmin,sameOrigin} from '@/lib/security';import {articleInput,limitedJson} from '@/lib/validation';
-export async function GET(){if(!await isAdmin())return Response.json({error:'Acesso restrito.'},{status:403});try{return Response.json(await getArticles(true),{headers:{'Cache-Control':'no-store'}})}catch{return Response.json({error:'Não foi possível carregar os artigos.'},{status:503})}}
-export async function POST(request:Request){if(!sameOrigin(request)||!await isAdmin())return Response.json({error:'Acesso restrito.'},{status:403});let input;try{input=articleInput.safeParse(await limitedJson(request))}catch{return Response.json({error:'Conteúdo inválido ou muito grande.'},{status:400})}if(!input.success)return Response.json({error:'Confira título, endereço, resumo, texto, fontes e data.'},{status:400});const a=input.data,id=crypto.randomUUID(),updated_at=new Date().toISOString();try{await database().prepare('INSERT INTO articles(id,slug,title,excerpt,category,series,body,sources,cover,status,published_at,updated_at,version) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,1)').bind(id,a.slug,a.title,a.excerpt,a.category,a.series,a.body,a.sources,a.cover,a.status,a.published_at,updated_at).run();return Response.json({...a,id,version:1,updated_at},{status:201})}catch(e){const conflict=String(e).includes('UNIQUE');return Response.json({error:conflict?'Esse endereço já pertence a outro artigo.':'Não foi possível salvar. Seu texto continua no editor.'},{status:conflict?409:503})}}
+import { supabaseAdmin } from '@/lib/db';
+import { isAdmin, sameOrigin } from '@/lib/security';
+import { deliver, mailReady, Contact } from '@/lib/mail';
+
+export async function POST(request: Request) {
+  if (!sameOrigin(request) || !(await isAdmin())) return Response.json({ error: 'Acesso restrito.' }, { status: 403 });
+  if (!mailReady()) return Response.json({ error: 'O serviço de e-mail ainda não foi conectado.' }, { status: 503 });
+  try {
+    const { data, error } = await supabaseAdmin
+      .from('contacts')
+      .select('*')
+      .eq('delivery', 'pending')
+      .order('created_at')
+      .limit(10);
+    if (error) throw new Error(error.message);
+    const rows = (data || []) as unknown as Contact[];
+    let sent = 0;
+    for (const c of rows) {
+      if (await deliver(c)) sent++;
+    }
+    return Response.json({ sent, total: rows.length });
+  } catch {
+    return Response.json({ error: 'Não foi possível encaminhar as mensagens.' }, { status: 503 });
+  }
+}
